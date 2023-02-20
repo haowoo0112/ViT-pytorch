@@ -5,6 +5,10 @@ name = "pypi"
 
 [packages]
 torch = "*"
+torchvision = "*"
+matplotlib = "*"
+numpy = "*"
+pillow = "*"
 
 [dev-packages]
 
