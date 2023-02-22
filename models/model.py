@@ -23,19 +23,18 @@ class Embeddings(nn.Module):
         self.img_size = img_size
         self.patch_size = patch_size
         self.channel_size = channel_size
-        
-    def forward(self, img):
-        x = self.preprocess(img)
+        n_patches = (img_size // patch_size) * (img_size // patch_size)
+        self.cls_token = nn.Parameter(torch.zeros(1, 768))
+        self.patch_embeddings = Conv2d(in_channels=3,
+                                       out_channels=768,
+                                       kernel_size=patch_size,
+                                       stride=patch_size)
+        self.position_embeddings = nn.Parameter(torch.zeros(n_patches+1, 768))
 
-    def preprocess(self, img):
-        y = torch.tensor([])
-        for i in range(0, self.img_size, self.patch_size):
-            for j in range(0, self.img_size, self.patch_size):
-                x = img[:,i : i+self.patch_size, j : j+self.patch_size]
-                x = x.flatten()
-                y = torch.cat((y, x), 0)
-                # flatten_img.append(x)
-        PPC = self.channel_size*self.patch_size*self.patch_size
-        y = y.view(-1, PPC)
-        print("embeddimg_shape: ", y.shape)
-        return y
+    def forward(self, img):
+        x = self.patch_embeddings(img)
+        x = x.flatten(1)
+        x = x.transpose(-1, -2)
+        x = torch.cat((self.cls_token , x), dim=0)
+        embeddings = x + self.position_embeddings
+        print("embedding_shape: ", embeddings.shape)
