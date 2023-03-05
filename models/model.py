@@ -1,11 +1,32 @@
+import copy
+import logging
+import math
+
+from os.path import join as pjoin
+
 import torch
 import torch.nn as nn
 import numpy as np
-import copy
-import math
-import models.configs as configs
 
 from torch.nn import CrossEntropyLoss, Dropout, Softmax, Linear, Conv2d, LayerNorm
+from torch.nn.modules.utils import _pair
+from scipy import ndimage
+
+import models.configs as configs
+
+from .modeling_resnet import ResNetV2
+
+
+logger = logging.getLogger(__name__)
+
+ATTENTION_Q = "MultiHeadDotProductAttention_1/query"
+ATTENTION_K = "MultiHeadDotProductAttention_1/key"
+ATTENTION_V = "MultiHeadDotProductAttention_1/value"
+ATTENTION_OUT = "MultiHeadDotProductAttention_1/out"
+FC_0 = "MlpBlock_3/Dense_0"
+FC_1 = "MlpBlock_3/Dense_1"
+ATTENTION_NORM = "LayerNorm_0"
+MLP_NORM = "LayerNorm_2"
 
 def np2th(weights, conv=False):
     """Possibly convert HWIO to OIHW."""
@@ -14,9 +35,11 @@ def np2th(weights, conv=False):
     return torch.from_numpy(weights)
 
 class VisionTransformer(nn.Module):
-    def __init__(self, img_size, patch_size):
+    def __init__(self, img_size, patch_size, zero_head, num_classes):
         super().__init__()
 
+        self.num_classes = num_classes;
+        self.zero_head = zero_head;
         self.embeddings = Embeddings(img_size, patch_size, 3)
         self.encoder = Encoder()
         self.head = Linear(768, 10)
@@ -26,11 +49,56 @@ class VisionTransformer(nn.Module):
         x = self.encoder(x)
         logits = self.head(x[:, 0])
 
-        # if labels is not None:
-        loss_fct = CrossEntropyLoss()
-        loss = loss_fct(logits.view(-1, self.num_classes), labels.view(-1))
-        return loss
-        # return x
+        if labels is not None:
+            loss_fct = CrossEntropyLoss()
+            loss = loss_fct(logits.view(-1, self.num_classes), labels.view(-1))
+            return loss
+        else:
+            return logits, None
+
+    def load_from(self, weights):
+        with torch.no_grad():
+            if self.zero_head:
+                nn.init.zeros_(self.head.weight)
+                nn.init.zeros_(self.head.bias)
+            else:
+                self.head.weight.copy_(np2th(weights["head/kernel"]).t())
+                self.head.bias.copy_(np2th(weights["head/bias"]).t())
+
+            self.embeddings.patch_embeddings.weight.copy_(np2th(weights["embedding/kernel"], conv=True))
+            self.embeddings.patch_embeddings.bias.copy_(np2th(weights["embedding/bias"]))
+            self.embeddings.cls_token.copy_(np2th(weights["cls"]))
+            self.encoder.encoder_norm.weight.copy_(np2th(weights["Transformer/encoder_norm/scale"]))
+            self.encoder.encoder_norm.bias.copy_(np2th(weights["Transformer/encoder_norm/bias"]))
+
+            posemb = np2th(weights["Transformer/posembed_input/pos_embedding"])
+            posemb_new = self.embeddings.position_embeddings
+            if posemb.size() == posemb_new.size():
+                self.embeddings.position_embeddings.copy_(posemb)
+            else:
+                logger.info("load_pretrained: resized variant: %s to %s" % (posemb.size(), posemb_new.size()))
+                ntok_new = posemb_new.size(1)
+
+                if self.classifier == "token":
+                    posemb_tok, posemb_grid = posemb[:, :1], posemb[0, 1:]
+                    ntok_new -= 1
+                else:
+                    posemb_tok, posemb_grid = posemb[:, :0], posemb[0]
+
+                gs_old = int(np.sqrt(len(posemb_grid)))
+                gs_new = int(np.sqrt(ntok_new))
+                print('load_pretrained: grid-size from %s to %s' % (gs_old, gs_new))
+                posemb_grid = posemb_grid.reshape(gs_old, gs_old, -1)
+
+                zoom = (gs_new / gs_old, gs_new / gs_old, 1)
+                posemb_grid = ndimage.zoom(posemb_grid, zoom, order=1)
+                posemb_grid = posemb_grid.reshape(1, gs_new * gs_new, -1)
+                posemb = np.concatenate([posemb_tok, posemb_grid], axis=1)
+                self.embeddings.position_embeddings.copy_(np2th(posemb))
+
+            for bname, block in self.encoder.named_children():
+                for uname, unit in block.named_children():
+                    unit.load_from(weights, n_block=uname)
 
 class Embeddings(nn.Module):
     """Construct the embeddings from patch, position embeddings.
@@ -42,20 +110,23 @@ class Embeddings(nn.Module):
         self.patch_size = patch_size
         self.channel_size = channel_size
         n_patches = (img_size // patch_size) * (img_size // patch_size)
-        self.cls_token = nn.Parameter(torch.zeros(1, 768))
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, 768))
         self.patch_embeddings = Conv2d(in_channels=3,
                                        out_channels=768,
                                        kernel_size=patch_size,
                                        stride=patch_size)
-        self.position_embeddings = nn.Parameter(torch.zeros(n_patches+1, 768))
+        self.position_embeddings = nn.Parameter(torch.zeros(1, n_patches+1, 768))
 
-    def forward(self, img):
-        x = self.patch_embeddings(img)
-        x = x.flatten(1)
+    def forward(self, x):
+        B = x.shape[0]
+        cls_tokens = self.cls_token.expand(B, -1, -1)
+
+        x = self.patch_embeddings(x)
+        x = x.flatten(2)
         x = x.transpose(-1, -2)
-        x = torch.cat((self.cls_token , x), dim=0)
+        x = torch.cat((cls_tokens, x), dim=1)
+
         embeddings = x + self.position_embeddings
-        print("embedding_shape: ", embeddings.shape)
         return embeddings
 
 class Encoder(nn.Module):
@@ -92,6 +163,43 @@ class Block(nn.Module):
         x = self.ffn(x)
         x = x + h
         return x
+    
+    def load_from(self, weights, n_block):
+        ROOT = f"Transformer/encoderblock_{n_block}"
+        with torch.no_grad():
+            query_weight = np2th(weights[pjoin(ROOT, ATTENTION_Q, "kernel")]).view(768, 768).t()
+            key_weight = np2th(weights[pjoin(ROOT, ATTENTION_K, "kernel")]).view(768, 768).t()
+            value_weight = np2th(weights[pjoin(ROOT, ATTENTION_V, "kernel")]).view(768, 768).t()
+            out_weight = np2th(weights[pjoin(ROOT, ATTENTION_OUT, "kernel")]).view(768, 768).t()
+
+            query_bias = np2th(weights[pjoin(ROOT, ATTENTION_Q, "bias")]).view(-1)
+            key_bias = np2th(weights[pjoin(ROOT, ATTENTION_K, "bias")]).view(-1)
+            value_bias = np2th(weights[pjoin(ROOT, ATTENTION_V, "bias")]).view(-1)
+            out_bias = np2th(weights[pjoin(ROOT, ATTENTION_OUT, "bias")]).view(-1)
+
+            self.attn.query.weight.copy_(query_weight)
+            self.attn.key.weight.copy_(key_weight)
+            self.attn.value.weight.copy_(value_weight)
+            self.attn.out.weight.copy_(out_weight)
+            self.attn.query.bias.copy_(query_bias)
+            self.attn.key.bias.copy_(key_bias)
+            self.attn.value.bias.copy_(value_bias)
+            self.attn.out.bias.copy_(out_bias)
+
+            mlp_weight_0 = np2th(weights[pjoin(ROOT, FC_0, "kernel")]).t()
+            mlp_weight_1 = np2th(weights[pjoin(ROOT, FC_1, "kernel")]).t()
+            mlp_bias_0 = np2th(weights[pjoin(ROOT, FC_0, "bias")]).t()
+            mlp_bias_1 = np2th(weights[pjoin(ROOT, FC_1, "bias")]).t()
+
+            self.ffn.fc1.weight.copy_(mlp_weight_0)
+            self.ffn.fc2.weight.copy_(mlp_weight_1)
+            self.ffn.fc1.bias.copy_(mlp_bias_0)
+            self.ffn.fc2.bias.copy_(mlp_bias_1)
+
+            self.attention_norm.weight.copy_(np2th(weights[pjoin(ROOT, ATTENTION_NORM, "scale")]))
+            self.attention_norm.bias.copy_(np2th(weights[pjoin(ROOT, ATTENTION_NORM, "bias")]))
+            self.ffn_norm.weight.copy_(np2th(weights[pjoin(ROOT, MLP_NORM, "scale")]))
+            self.ffn_norm.bias.copy_(np2th(weights[pjoin(ROOT, MLP_NORM, "bias")]))
 
 class Attention(nn.Module):
     def __init__(self):
