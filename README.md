@@ -53,9 +53,9 @@ self.pos_embedding = nn.Parameter(torch.randn(1, num_patches + 1, dim))
 x + = self.pos_embedding(:,:(n + 1))
 ```
 
-class token
-![](https://i.imgur.com/HRHu9I1.png)
-similar to BERT (initial zero)
+class token  
+![](https://i.imgur.com/HRHu9I1.png)  
+similar to BERT (initial zero)  
 ![](https://i.imgur.com/QuzUK8d.png)
 
 ### Transformer Encoder
@@ -73,11 +73,11 @@ Fully connected and activation function
 Pre-train on large datasets, and fine-tune to smaller task.
 Step
 - Pre-train
-    - predition head: MLP with one hidden layer
-    ![](https://i.imgur.com/FL0P5vh.png)
+    - predition head: MLP with one hidden layer  
+    ![](https://i.imgur.com/FL0P5vh.png)  
 - Remove pre-trained predition head
-- Attach a zero-initialized D x K feedforward layer
-![](https://i.imgur.com/lfvlx7a.png)
+- Attach a zero-initialized D x K feedforward layer  
+![](https://i.imgur.com/lfvlx7a.png)  
 
 ## EXPERIMENTS
 
@@ -132,18 +132,18 @@ n-shot: 1 class have n samples
 ![](https://i.imgur.com/L4OgBf8.png)
 ![](https://i.imgur.com/vkSKYBP.png)
 
-### PRE-TRAINING DATA REQUIREMENTS
+### PRE-TRAINING DATA REQUIREMENTS  
 
 The comparison between small datasets and larger datasets when pre-trained.
 - large ViT models perform worse than BiT
-- large ViT models shine when pre-trained on larger datasets.
-![](https://i.imgur.com/VO1Isoe.png)
-The number in the above picture means P
+- large ViT models shine when pre-trained on larger datasets.  
+![](https://i.imgur.com/VO1Isoe.png)  
+The number in the above picture means P  
 ![](https://i.imgur.com/PRHaLtL.png)
 
 
-The comparison between different size of subset
-- use early-stopping, and report the best validation accuracy achieved during training
+The comparison between different size of subset  
+- use early-stopping, and report the best validation accuracy achieved during training  
 ![](https://i.imgur.com/2c8Brn0.png)
 
 ### SCALING STUDY
@@ -157,10 +157,6 @@ The comparison between different size of subset
 
 ## my result
 
-randomcrop and resize
-0.9737 3:03:00
-resize
-0.9823 2:58:00
-
-me resize
-0.9874 2:20:00
+|acc |time
+|-|-
+|0.9874 |2:20:00
