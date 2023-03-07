@@ -74,8 +74,10 @@ Pre-train on large datasets, and fine-tune to smaller task.
 Step
 - Pre-train
     - predition head: MLP with one hidden layer
+    ![](https://i.imgur.com/FL0P5vh.png)
 - Remove pre-trained predition head
 - Attach a zero-initialized D x K feedforward layer
+![](https://i.imgur.com/lfvlx7a.png)
 
 ## EXPERIMENTS
 
@@ -151,3 +153,14 @@ The comparison between different size of subset
 ### INSPECTING VISION TRANSFORMER
 
 ### SELF-SUPERVISION
+
+
+## my result
+
+randomcrop and resize
+0.9737 3:03:00
+resize
+0.9823 2:58:00
+
+me resize
+0.9874 2:20:00
